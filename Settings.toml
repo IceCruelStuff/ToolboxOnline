@@ -1,0 +1,3 @@
+[stat]
+max_users_per_ip = 10
+check_in_interval = 10
