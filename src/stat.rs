@@ -2,24 +2,44 @@ use actix_web::{web, HttpResponse, Responder, HttpRequest};
 use std::sync::Mutex;
 use std::collections::{HashSet, HashMap};
 use crate::settings::Settings;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use actix::{Actor, AsyncContext};
 use std::rc::Rc;
+use serde::Serialize;
+use std::cmp::max;
+use rand::{thread_rng, Rng};
 
 const USER_IDENTIFIER_LENGTH: usize = 36;
 
 struct StatRegisteredData {
     ips: HashMap<String, u32>,
     users: HashSet<String>,
-    last_count: usize
+    last_count: usize,
+    last_sum_up: Instant
 }
 struct StatServiceState {
     registered_data: Mutex<StatRegisteredData>
 }
 
+impl StatRegisteredData {
+    fn get_next_check_in_time(self: &StatRegisteredData) -> u64 {
+        let check_in_interval = Settings::get().stat.check_in_interval as i64;
+        let base_time = check_in_interval - (Instant::now() - self.last_sum_up).as_secs() as i64;
+        let min_time = max(base_time + check_in_interval / 10, 0) as u64;
+        let max_time = max(base_time + check_in_interval - check_in_interval / 10, 0) as u64;
+        thread_rng().gen_range(min_time, max_time)
+    }
+}
+
 async fn show_online(data: web::Data<Rc<StatServiceState>>) -> impl Responder {
     let reg_data = data.registered_data.lock().unwrap();
-    HttpResponse::Ok().body(reg_data.users.len().to_string())
+    HttpResponse::Ok().body(reg_data.last_count.to_string())
+}
+
+#[derive(Serialize)]
+struct ReportOnlineResponse {
+    status: &'static str,
+    next_check_in: u64
 }
 
 async fn report_online(req: HttpRequest, path: web::Path<String>, data: web::Data<Rc<StatServiceState>>) -> impl Responder {
@@ -32,7 +52,10 @@ async fn report_online(req: HttpRequest, path: web::Path<String>, data: web::Dat
             reg_data.users.insert(path.into_inner());
         }
     }
-    HttpResponse::Ok().body("OK")
+    HttpResponse::Ok().json(ReportOnlineResponse {
+        status: "ok",
+        next_check_in: reg_data.get_next_check_in_time()
+    })
 }
 
 struct StatSumUpActor (Rc<StatServiceState>);
@@ -47,6 +70,7 @@ impl Actor for StatSumUpActor {
             reg_data.last_count = reg_data.users.len();
             reg_data.users.clear();
             reg_data.ips.clear();
+            reg_data.last_sum_up = Instant::now()
         });
     }
 }
@@ -54,12 +78,13 @@ impl Actor for StatSumUpActor {
 pub fn configure_stat(cfg: &mut web::ServiceConfig) {
     let state = Rc::new(StatServiceState {
         registered_data: Mutex::new(StatRegisteredData {
-            ips: HashMap::new(), users: HashSet::new(), last_count: 0
+            ips: HashMap::new(), users: HashSet::new(), last_count: 0,
+            last_sum_up: Instant::now()
         })
     });
     cfg
         .data(Rc::clone(&state))
         .route("/online", web::get().to(show_online))
-        .route("/online/{userid}", web::put().to(report_online));
+        .route("/online/{userid}", web::get().to(report_online));
     StatSumUpActor(state).start();
 }
