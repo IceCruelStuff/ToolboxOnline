@@ -1,3 +1,10 @@
 [stat]
 max_users_per_ip = 10
 check_in_interval = 10
+
+[premium]
+valid_subscription_ids = [ "premium_weekly" ]
+
+[google]
+key_path = "GoogleKey.json"
+token_cache = "tmp/TokenCache.json"
